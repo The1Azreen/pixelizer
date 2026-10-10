@@ -2,18 +2,19 @@
 
 Turn any image into crisp retro pixel art: app icons, sprites, avatars and Game Boy-style scenes. You pick the exact output size (16×16, 32×32, 96×64, anything), and an optional, lightweight AI cutout turns photos into transparent icons.
 
-![Pixelizer desktop app](examples/app.png)
+![Pixelizer desktop app](readme_image/Fortnite.png)
 
-## Examples
+## Example
 
-| Original | Pixel art | Command |
-|---|---|---|
-| ![](examples/onion.jpg) | ![](examples/onion_icon.png) | `-s 32 --remove-bg --outline -c 12` |
-| ![](examples/raspberries.jpg) | ![](examples/raspberries_endesga.png) | `-s 32 --remove-bg --outline --palette endesga-32` |
-| ![](examples/pug.jpg) | ![](examples/pug_gameboy.png) | `-s 48 --palette game-boy -d ordered --contrast 1.3` |
-| ![](examples/mountain.jpg) | ![](examples/mountain_96x64.png) | `-s 96x64 --fit crop -c 12 -d ordered` |
+A 1216×2160 Fortnite screenshot turned into a 32×32 icon (16 colours, cropped to square, with an outline):
 
-The results are shown enlarged with `--scale`; the real files are 32×32, 48×48 and 96×64. Example photos come from [Unsplash](https://unsplash.com/license) via picsum.photos.
+| Original | Pixel art (32×32) |
+|---|---|
+| <img src="examples/Fortnite.png" width="240"> | <img src="examples/Fortnite_Pixel.png" width="256"> |
+
+```
+python pixelize.py examples/Fortnite.png -s 32 --fit crop --outline
+```
 
 ## Requirements
 
