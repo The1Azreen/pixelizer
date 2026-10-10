@@ -4,17 +4,17 @@ Turn any image into crisp retro pixel art: app icons, sprites, avatars and Game 
 
 ![Pixelizer desktop app](readme_image/Fortnite.png)
 
-## Example
+## Examples
 
-A 1216×2160 Fortnite screenshot turned into a 32×32 icon (16 colours, cropped to square, with an outline):
+| Original | Pixel art | Command |
+|---|---|---|
+| ![](examples/onion.jpg) | ![](examples/onion_icon.png) | `-s 32 --remove-bg --outline -c 12` |
+| ![](examples/raspberries.jpg) | ![](examples/raspberries_endesga.png) | `-s 32 --remove-bg --outline --palette endesga-32` |
+| ![](examples/pug.jpg) | ![](examples/pug_gameboy.png) | `-s 48 --palette game-boy -d ordered --contrast 1.3` |
+| ![](examples/mountain.jpg) | ![](examples/mountain_96x64.png) | `-s 96x64 --fit crop -c 12 -d ordered` |
+| <img src="examples/Fortnite.png" width="216"> | <img src="examples/Fortnite_Pixel.png" width="256"> | `-s 32 --fit crop --outline` |
 
-| Original | Pixel art (32×32) |
-|---|---|
-| <img src="examples/Fortnite.png" width="240"> | <img src="examples/Fortnite_Pixel.png" width="256"> |
-
-```
-python pixelize.py examples/Fortnite.png -s 32 --fit crop --outline
-```
+The first four results are shown enlarged with `--scale`; the real files are 32×32, 48×48 and 96×64. The Fortnite example is the real 32×32 file, displayed larger. The first four example photos come from [Unsplash](https://unsplash.com/license) via picsum.photos.
 
 ## Requirements
 
