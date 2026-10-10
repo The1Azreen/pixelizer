@@ -14,8 +14,9 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageGrab, ImageTk
 
 import pixelize
@@ -88,6 +89,24 @@ def reveal(path):
         subprocess.Popen(["explorer", "/select,", str(path)])
     else:
         open_path(str(path if path.is_dir() else path.parent))
+
+
+def line_points(a, b):
+    """Pixels on the straight line from a to b (Bresenham), excluding a."""
+    (x0, y0), (x1, y1) = a, b
+    dx, dy = abs(x1 - x0), -abs(y1 - y0)
+    sx, sy = (1 if x1 > x0 else -1), (1 if y1 > y0 else -1)
+    err, points = dx + dy, []
+    while (x0, y0) != (x1, y1):
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x0 += sx
+        if e2 <= dx:
+            err += dx
+            y0 += sy
+        points.append((x0, y0))
+    return points
 
 
 def checker(w, h, cell):
@@ -259,7 +278,25 @@ class Preview(tk.Canvas):
         self.grid = False
         self.photo = None
         self.zoom = 1
+        self.origin = (0, 0)     # canvas position of the result's top-left pixel
+        self.painting = False    # show the grid while a paint tool is active
+        self._checker = (None, None)
         self.bind("<Configure>", lambda e: self.draw())
+
+    def pixel_at(self, x, y):
+        """Result pixel (col, row) under canvas point x, y, or None."""
+        if self.mode != "result" or self.result is None:
+            return None
+        col, row = (x - self.origin[0]) // self.zoom, (y - self.origin[1]) // self.zoom
+        if 0 <= col < self.result.width and 0 <= row < self.result.height:
+            return int(col), int(row)
+        return None
+
+    def checker(self, w, h, cell):
+        key = (w, h, cell)
+        if self._checker[0] != key:
+            self._checker = (key, checker(w, h, cell))
+        return self._checker[1].copy()
 
     def show(self, result=None, original=None):
         if result is not None:
@@ -292,16 +329,17 @@ class Preview(tk.Canvas):
             big = img.resize((max(1, round(img.width * ratio)), max(1, round(img.height * ratio))),
                              Image.Resampling.LANCZOS)
             cell = px(8)
-        canvas = checker(big.width, big.height, cell)
+        canvas = self.checker(big.width, big.height, cell)
         canvas.alpha_composite(big.convert("RGBA"))
-        if self.mode == "result" and self.grid and self.zoom >= 6:
+        if self.mode == "result" and (self.grid or self.painting) and self.zoom >= 6:
             d = ImageDraw.Draw(canvas, "RGBA")
             for x in range(0, big.width + 1, self.zoom):
                 d.line((x, 0, x, big.height), fill=(0, 0, 0, 70))
             for y in range(0, big.height + 1, self.zoom):
                 d.line((0, y, big.width, y), fill=(0, 0, 0, 70))
         self.photo = ImageTk.PhotoImage(canvas)
-        self.create_image(w // 2, h // 2, image=self.photo)
+        self.origin = (w // 2 - big.width // 2, h // 2 - big.height // 2)
+        self.create_image(*self.origin, image=self.photo, anchor="nw")
 
     def draw_empty(self, w, h):
         cell = px(9)
@@ -339,6 +377,14 @@ class App(tk.Tk):
         self.cutout = None        # cached AI cutout of self.source
         self.result = None
         self.palette = []
+        self.color_map = {}       # palette swaps chosen by clicking swatches: {old rgb: new rgb}
+        self.swatch_hits = []     # (x0, x1, original rgb) for each drawn swatch
+        self.edits = {}           # pencil/eraser edits on top of the render: {(col, row): rgba}
+        self.undo_stack = []      # one {(col, row): previous edit or None} per stroke
+        self.stroke = None        # the stroke being drawn
+        self.last_pixel = None
+        self.brush = (0, 0, 0)
+        self.info_text = ""
         self.saved_path = None
         self.events = queue.Queue()
         self.busy = False
@@ -363,6 +409,7 @@ class App(tk.Tk):
         self.scale_var = tk.StringVar(value="1")
         self.view_var = tk.StringVar(value="result")
         self.grid_var = tk.BooleanVar(value=False)
+        self.tool_var = tk.StringVar(value="view")
         self.advanced_open = False
 
         self.build()
@@ -378,6 +425,8 @@ class App(tk.Tk):
         self.bind_all("<Control-o>", lambda e: self.pick_input())
         self.bind_all("<Control-v>", self.paste)
         self.bind_all("<Control-s>", lambda e: self.save())
+        self.bind_all("<Control-z>", lambda e: self.undo())
+        self.tool_var.trace_add("write", lambda *_: self.update_tool())
         self.after(50, self.poll)
         if initial:
             self.after(100, self.load_path, initial)
@@ -560,6 +609,13 @@ class App(tk.Tk):
 
         def view_controls(parent):
             box = ttk.Frame(parent, style="Card.TFrame")
+            self.segmented(box, self.tool_var, {"view": "View", "pencil": "Pencil", "eraser": "Eraser"},
+                           style="SmallSeg.Toolbutton").pack(side="left")
+            self.brush_box = tk.Canvas(box, width=px(22), height=px(22), bg=CARD, highlightthickness=0,
+                                       cursor="hand2")
+            self.brush_box.pack(side="left", padx=(px(8), px(18)))
+            self.brush_box.bind("<Button-1>", lambda e: self.pick_brush())
+            self.draw_brush()
             ttk.Checkbutton(box, text="Grid", variable=self.grid_var, style="Card.TCheckbutton").pack(
                 side="left", padx=(0, px(14)))
             self.segmented(box, self.view_var, {"result": "Pixel art", "original": "Original"},
@@ -570,6 +626,10 @@ class App(tk.Tk):
         prev_card.grid(row=0, column=0, sticky="nsew")
         self.preview = Preview(prev)
         self.preview.pack(fill="both", expand=True)
+        self.preview.bind("<Button-1>", self.paint_start)
+        self.preview.bind("<B1-Motion>", self.paint_move)
+        self.preview.bind("<ButtonRelease-1>", self.paint_end)
+        self.preview.bind("<Button-3>", self.eyedrop)
         self.busy_bar = ttk.Progressbar(prev, mode="indeterminate", style="Accent.Horizontal.TProgressbar")
         info = ttk.Frame(prev, style="Card.TFrame")
         info.pack(fill="x", pady=(px(10), 0))
@@ -578,6 +638,14 @@ class App(tk.Tk):
         self.swatches = tk.Canvas(info, width=px(100), height=px(18), bg=CARD, highlightthickness=0)
         self.swatches.pack(side="right", fill="x", expand=True, padx=(px(16), 0))
         self.swatches.bind("<Configure>", lambda e: self.draw_swatches())
+        self.swatches.bind("<Button-1>", self.pick_swatch_color)
+        self.swatches.bind("<Button-3>", self.reset_swatch_color)
+        self.swatches.bind("<Motion>", self.hover_swatch)
+        self.swatches.bind("<Leave>", lambda e: self.hover_swatch(None))
+        self.reset_colors_btn = ttk.Button(info, text="Reset colours", style="Link.TButton",
+                                           command=self.reset_colors)
+        self.clear_paint_btn = ttk.Button(info, text="Clear paint", style="Link.TButton",
+                                          command=self.clear_paint)
 
         exp_card, exp = self.card(right)
         exp_card.grid(row=1, column=0, sticky="ew", pady=(px(12), 0))
@@ -730,6 +798,10 @@ class App(tk.Tk):
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGBA")
         self.source, self.source_path, self.cutout = img, path, None
+        self.color_map.clear()
+        self.edits.clear()
+        self.undo_stack.clear()
+        self.update_reset_btn()
         name = path.name if path else "Pasted image"
         self.drop.set_image(name, f"{img.width} × {img.height}   ·   Click to change", img)
         self.preview.show(original=img)
@@ -847,25 +919,200 @@ class App(tk.Tk):
         self.after(50, self.poll)
 
     def show_result(self, result, palette, secs):
+        if self.result is not None and self.result.size != result.size and self.edits:
+            self.edits.clear()  # the pixel grid changed, so old edits no longer line up
+            self.undo_stack.clear()
+            self.update_reset_btn()
+        if self.result is None and palette:
+            self.brush = palette[0]  # darkest colour: a sensible first pen
+            self.draw_brush()
         self.result, self.palette = result, palette
-        self.preview.show(result=result)
-        self.info_label.config(text=f"{result.width} × {result.height}   ·   {len(palette)} colours   ·   "
-                                    f"{secs * 1000:.0f} ms", fg=TEXT)
+        self.preview.show(result=self.final())
+        self.info_text = (f"{result.width} × {result.height}   ·   {len(palette)} colours   ·   "
+                          f"{secs * 1000:.0f} ms")
+        self.info_label.config(text=self.info_text, fg=TEXT)
         self.draw_swatches()
         self.save_btn.config(state="normal")
+
+    def final(self):
+        """The rendered image with the user's palette swaps and pencil edits applied."""
+        img = pixelize.recolor(self.result, self.color_map)
+        if not self.edits:
+            return img
+        rgba = np.asarray(img.convert("RGBA")).copy()
+        for (col, row), value in self.edits.items():
+            if row < rgba.shape[0] and col < rgba.shape[1]:
+                rgba[row, col] = value
+        return Image.fromarray(rgba, "RGBA")
 
     def draw_swatches(self):
         c = self.swatches
         c.delete("all")
-        size, gap = px(14), px(3)
-        w = c.winfo_width()
+        self.swatch_hits = []
+        gap, w = px(3), c.winfo_width()
+        # Shrink swatches when space is tight so every colour stays clickable (down to a small minimum).
+        size = max(px(7), min(px(14), (w + gap) // max(1, len(self.palette)) - gap))
         fit = max(1, (w + gap) // (size + gap))
         colors = self.palette[:fit]
         x = w - len(colors) * (size + gap) + gap
         y = (c.winfo_height() - size) // 2
         for rgb in colors:
-            c.create_rectangle(x, y, x + size - 1, y + size - 1, fill="#%02x%02x%02x" % rgb, outline=BORDER)
+            shown = self.color_map.get(rgb, rgb)
+            changed = shown != rgb
+            c.create_rectangle(x, y, x + size - 1, y + size - 1, fill="#" + pixelize.to_hex(shown),
+                               outline=ACCENT_HOVER if changed else BORDER, width=2 if changed else 1)
+            self.swatch_hits.append((x, x + size, rgb))
             x += size + gap
+
+    # ---------- palette swaps ----------
+
+    def swatch_at(self, x):
+        return next((rgb for x0, x1, rgb in self.swatch_hits if x0 - 1 <= x <= x1 + 1), None)
+
+    def hover_swatch(self, event):
+        rgb = self.swatch_at(event.x) if event else None
+        self.swatches.config(cursor="hand2" if rgb else "")
+        if rgb is None:
+            if self.info_text and self.result is not None:
+                self.info_label.config(text=self.info_text, fg=TEXT)
+            return
+        shown = self.color_map.get(rgb, rgb)
+        if self.tool_var.get() == "pencil":
+            self.info_label.config(text=f"#{pixelize.to_hex(shown)}   ·   click to paint with this colour",
+                                   fg=ACCENT_HOVER)
+            return
+        text = f"#{pixelize.to_hex(shown)}   ·   click to change"
+        if shown != rgb:
+            text += f", right-click to restore #{pixelize.to_hex(rgb)}"
+        self.info_label.config(text=text, fg=ACCENT_HOVER)
+
+    def pick_swatch_color(self, event):
+        rgb = self.swatch_at(event.x)
+        if rgb is None:
+            return
+        if self.tool_var.get() == "pencil":
+            self.set_brush(self.color_map.get(rgb, rgb))
+            return
+        current = "#" + pixelize.to_hex(self.color_map.get(rgb, rgb))
+        chosen = colorchooser.askcolor(color=current, parent=self, title="Change colour")[1]
+        if not chosen:
+            return
+        new = pixelize.parse_hex(chosen)
+        if new == rgb:
+            self.color_map.pop(rgb, None)
+        else:
+            self.color_map[rgb] = new
+        self.apply_colors()
+
+    def reset_swatch_color(self, event):
+        rgb = self.swatch_at(event.x)
+        if rgb is not None and self.color_map.pop(rgb, None) is not None:
+            self.apply_colors()
+
+    def reset_colors(self):
+        self.color_map.clear()
+        self.apply_colors()
+
+    def apply_colors(self):
+        if self.result is not None:
+            self.preview.show(result=self.final())
+        self.draw_swatches()
+        self.update_reset_btn()
+
+    def update_reset_btn(self):
+        for btn, show in ((self.reset_colors_btn, bool(self.color_map)), (self.clear_paint_btn, bool(self.edits))):
+            if show and not btn.winfo_ismapped():
+                btn.pack(side="right", before=self.swatches, padx=(px(10), 0))
+            elif not show and btn.winfo_ismapped():
+                btn.pack_forget()
+
+    # ---------- pencil ----------
+
+    def update_tool(self):
+        tool = self.tool_var.get()
+        if tool != "view" and self.view_var.get() != "result":
+            self.view_var.set("result")
+        self.preview.painting = tool != "view"
+        self.preview.config(cursor={"pencil": "pencil", "eraser": "dotbox"}.get(tool, ""))
+        self.preview.draw()
+
+    def draw_brush(self):
+        c = self.brush_box
+        c.delete("all")
+        n = px(22)
+        c.create_rectangle(1, 1, n - 2, n - 2, fill="#" + pixelize.to_hex(self.brush), outline=BORDER)
+
+    def set_brush(self, rgb):
+        self.brush = tuple(rgb)
+        self.draw_brush()
+        if self.tool_var.get() != "pencil":
+            self.tool_var.set("pencil")
+
+    def pick_brush(self):
+        chosen = colorchooser.askcolor(color="#" + pixelize.to_hex(self.brush), parent=self,
+                                       title="Pencil colour")[1]
+        if chosen:
+            self.set_brush(pixelize.parse_hex(chosen))
+
+    def eyedrop(self, event):
+        """Right-click a pixel to take its colour for the pencil."""
+        xy = self.preview.pixel_at(event.x, event.y)
+        if xy is None:
+            return
+        r, g, b, a = self.final().getpixel(xy)
+        if a:
+            self.set_brush((r, g, b))
+
+    def paint_start(self, event):
+        if self.tool_var.get() == "view" or self.result is None:
+            return
+        self.stroke = {}
+        self.last_pixel = None
+        self.paint_move(event)
+
+    def paint_move(self, event):
+        if self.stroke is None:
+            return
+        xy = self.preview.pixel_at(event.x, event.y)
+        if xy is None:
+            self.last_pixel = None
+            return
+        # Fill the gap since the last event so fast drags draw a continuous line.
+        points = line_points(self.last_pixel, xy) if self.last_pixel else [xy]
+        self.last_pixel = xy
+        value = (*self.brush, 255) if self.tool_var.get() == "pencil" else (0, 0, 0, 0)
+        changed = False
+        for p in points:
+            if self.edits.get(p) == value:
+                continue
+            self.stroke.setdefault(p, self.edits.get(p))
+            self.edits[p] = value
+            changed = True
+        if changed:
+            self.preview.show(result=self.final())
+
+    def paint_end(self, event):
+        if self.stroke:
+            self.undo_stack.append(self.stroke)
+            self.update_reset_btn()
+        self.stroke = None
+
+    def undo(self):
+        if not self.undo_stack or isinstance(self.focus_get(), (tk.Entry, ttk.Entry, ttk.Spinbox)):
+            return
+        for p, previous in self.undo_stack.pop().items():
+            if previous is None:
+                self.edits.pop(p, None)
+            else:
+                self.edits[p] = previous
+        self.preview.show(result=self.final())
+        self.update_reset_btn()
+
+    def clear_paint(self):
+        self.edits.clear()
+        self.undo_stack.clear()
+        self.preview.show(result=self.final())
+        self.update_reset_btn()
 
     # ---------- saving ----------
 
@@ -886,7 +1133,7 @@ class App(tk.Tk):
         if path.suffix.lower() not in pixelize.SAVE_TYPES:
             path = path.with_suffix(ext)
         try:
-            pixelize.save(self.result, path, 1 if path.suffix.lower() == ".ico" else scale)
+            pixelize.save(self.final(), path, 1 if path.suffix.lower() == ".ico" else scale)
         except Exception as e:
             messagebox.showerror("Save failed", str(e))
             return

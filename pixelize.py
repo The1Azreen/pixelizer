@@ -463,6 +463,23 @@ def add_outline(rgba, color):
     rgba[ring, 3] = 255
 
 
+def recolor(img, mapping):
+    """Swap palette colours: mapping is {old (r, g, b): new (r, g, b)}. Transparent pixels are left alone."""
+    if not mapping:
+        return img
+    rgba = np.asarray(img.convert("RGBA")).copy()
+    rgb, visible = rgba[..., :3], rgba[..., 3] > 0
+    # Find every match first so swaps like A->B, B->A don't cascade into each other.
+    hits = [(visible & (rgb == old).all(-1), new) for old, new in mapping.items() if old != new]
+    for mask, new in hits:
+        rgb[mask] = new
+    return Image.fromarray(rgba, "RGBA")
+
+
+def to_hex(rgb):
+    return "%02x%02x%02x" % tuple(rgb)
+
+
 # ---------- saving ----------
 
 def upscale(img, scale):
@@ -547,6 +564,9 @@ def build_parser():
     p.add_argument("--contrast", type=float, default=1.0, help="Contrast boost, 1 = unchanged")
     p.add_argument("--saturation", type=float, default=1.0, help="Saturation boost, 1 = unchanged")
     p.add_argument("--background", default="", help="Fill transparency with this hex colour, e.g. 1a1c2c")
+    p.add_argument("--recolor", action="append", default=[], metavar="OLD=NEW",
+                   help="Swap a palette colour, e.g. --recolor 1d2b53=ff004d (repeatable; "
+                        "the palette is printed after each run)")
     p.add_argument("--scale", type=int, default=1, help="Enlarge the saved image N times with hard pixel edges")
     return p
 
@@ -566,14 +586,23 @@ def main(argv=None):
         ok, msg = cutout_status()
         if not ok:
             sys.exit(f"Error: {msg}")
+    try:
+        mapping = {parse_hex(old): parse_hex(new) for old, new in (r.split("=", 1) for r in args.recolor)}
+    except ValueError:
+        sys.exit("Error: --recolor takes OLD=NEW hex colours, e.g. 1d2b53=ff004d")
     t = time.perf_counter()
     with Image.open(src) as im:
         im.load()
         result, palette = pixelize(im, s)
+    missing = [to_hex(c) for c in mapping if c not in palette]
+    if missing:
+        print(f"Warning: not in the palette, skipped: {', '.join(missing)}", file=sys.stderr)
+    result = recolor(result, mapping)
     out = Path(args.output) if args.output else default_output(src, result)
     save(result, out, max(1, args.scale))
     ms = (time.perf_counter() - t) * 1000
     print(f"{result.width}x{result.height}, {len(palette)} colours, {ms:.0f} ms -> {out}")
+    print("palette: " + " ".join(to_hex(c) for c in palette))
 
 
 if __name__ == "__main__":

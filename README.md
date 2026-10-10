@@ -2,7 +2,7 @@
 
 Turn any image into crisp retro pixel art: app icons, sprites, avatars and Game Boy-style scenes. You pick the exact output size (16×16, 32×32, 96×64, anything), and an optional, lightweight AI cutout turns photos into transparent icons.
 
-![Pixelizer desktop app](readme_image/Fortnite.png)
+![Pixelizer desktop app](readme_image/pixelizer_ui.png)
 
 ## Examples
 
@@ -36,6 +36,8 @@ Double-click **`pixelizer_gui.pyw`** (or run `python pixelizer_gui.pyw`). Pick a
 - **Look**: an automatic palette with N colours, or a classic one (PICO-8, Sweetie 16, Endesga 32, Commodore 64, Game Boy, CGA, 1-bit). You can also add dithering, a 1px outline, and AI background removal.
 - **Advanced**: downscale method, contrast, saturation, background fill, trimming and stray-pixel cleanup.
 - **Preview**: toggle a pixel grid, or flip to the original to compare.
+- **Recolour**: click any colour swatch under the preview to swap that colour everywhere it's used, e.g. turn a blue sky orange. Right-click a swatch to restore it, or use **Reset colours**. Swaps stay while you tweak other settings and are included when you save.
+- **Pencil**: switch the preview to **Pencil** or **Eraser** to edit single pixels; drag to draw lines. Click the colour square next to the tools to pick any colour, click a swatch to paint with a palette colour, or right-click a pixel to pick up its colour. **Ctrl+Z** undoes a stroke and **Clear paint** removes all edits. Edits are kept while you tweak settings at the same size and are included when you save; changing the size starts a fresh grid.
 - **Export**: PNG, ICO (every size from 16 to 256 px with hard edges, ready for Windows shortcuts), GIF or lossless WebP, enlarged 1× to 16×.
 
 If the AI model isn't installed yet, the app shows an **Install AI model** button.
@@ -74,6 +76,7 @@ python pixelize.py cat.jpg -s 48 --remove-bg --outline --scale 8
 | `--remove-bg` | AI background removal |
 | `--contrast`, `--saturation` | Boost before pixelizing (1 = unchanged) |
 | `--background` | Fill transparency with a hex colour |
+| `--recolor OLD=NEW` | Swap a palette colour, e.g. `--recolor 29adff=ff004d` (repeatable). Each run prints the palette so you know the hex codes |
 | `--scale` | Enlarge the saved file N× with hard pixel edges |
 | `--no-trim`, `--no-cleanup` | Keep transparent borders / stray single pixels |
 
